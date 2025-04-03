@@ -11,7 +11,7 @@ const path = require('path');
 const AppError = require('./utils/appError');
 const globalErrorHandler = require('./controllers/errorController');
 const authRoutes = require('./routes/authRoutes');
-const committeeRoutes = require('../backend//routes/committeRoutes'); // Added missing import
+const committeeRoutes = require('../backend/routes/committeRoutes'); // Added missing import
 
 // Create Express app
 const app = express();

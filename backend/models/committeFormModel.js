@@ -1,4 +1,3 @@
-// models/Committee.js
 const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 
@@ -27,9 +26,12 @@ const CommitteeSchema = new Schema({
     type: String
   },
   members: [{
+    employeeId: String,
     name: String,
     role: String,
-    email: String
+    email: String,
+    department: String,
+    designation: String
   }],
   formationLetter: {
     filename: String,
@@ -38,10 +40,14 @@ const CommitteeSchema = new Schema({
     mimetype: String,
     size: Number
   },
-  createdAt: {
-    type: Date,
-    default: Date.now
+  createdBy: {
+    type: Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
   }
-});
+},
+  { timestamps: true } // 
+);
 
+// Export the model
 module.exports = mongoose.model('Committee', CommitteeSchema);

@@ -10,17 +10,19 @@ const signToken = (id) => {
 };
 
 const createSendToken = (user, statusCode, res) => {
-  const token = signToken(user._id);
+  const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET);
   
-  // Remove password from output
+  // Simple 1-day cookie for testing
+  res.cookie('jwt', token, {
+    expires: new Date(Date.now() + 24 * 60 * 60 * 1000), // 1 day
+    httpOnly: true
+  });
+
   user.password = undefined;
-  
   res.status(statusCode).json({
     status: 'success',
     token,
-    data: {
-      user,
-    },
+    data: { user }
   });
 };
 
@@ -70,58 +72,61 @@ exports.login = catchAsync(async (req, res, next) => {
     return next(new AppError('Your account has been deactivated', 401));
   }
 
-    // Log successful login
-    console.log('User logged in successfully:', {
-      timestamp: new Date().toISOString(),
-      userId: user._id,
-      email: user.email,
-      role: user.role,
-      employeeId: user.employeeId
-    });
+  // Log successful login
+  console.log('User logged in successfully:', {
+    timestamp: new Date().toISOString(),
+    userId: user._id,
+    email: user.email,
+    role: user.role,
+    employeeId: user.employeeId
+  });
   
   // 4) If everything ok, send token to client
   createSendToken(user, 200, res);
 });
 
 exports.protect = catchAsync(async (req, res, next) => {
-  // 1) Getting token and check if it's there
+  // 1) Getting token
   let token;
-  if (
-    req.headers.authorization &&
-    req.headers.authorization.startsWith('Bearer')
-  ) {
+  
+  // Check authorization header first
+  if (req.headers.authorization?.startsWith('Bearer')) {
     token = req.headers.authorization.split(' ')[1];
+  } 
+  // Then check cookies
+  else if (req.cookies?.jwt) {
+    token = req.cookies.jwt;
   }
-  
+
   if (!token) {
-    return next(
-      new AppError('You are not logged in! Please log in to get access.', 401)
-    );
+    return next(new AppError('Authentication required', 401));
   }
-  
-  // 2) Verification token
-  const decoded = await promisify(jwt.verify)(token, process.env.JWT_SECRET);
-  
-  // 3) Check if user still exists
-  const currentUser = await User.findById(decoded.id);
-  if (!currentUser) {
-    return next(
-      new AppError('The user belonging to this token no longer exists.', 401)
-    );
+
+  // 2) Verify token
+  try {
+    const decoded = await jwt.verify(token, process.env.JWT_SECRET);
+    console.log('Token verified successfully for user:', decoded.id);
+    
+    // 3) Check if user exists
+    const currentUser = await User.findById(decoded.id);
+    if (!currentUser) {
+      return next(new AppError('User no longer exists', 401));
+    }
+
+    // 4) Check if password changed after token was issued
+    if (currentUser.changedPasswordAfter(decoded.iat)) {
+      return next(new AppError('Password changed - please log in again', 401));
+    }
+
+    req.user = currentUser;
+    next();
+  } catch (err) {
+    console.error('JWT Verification Error:', err.message);
+    return next(new AppError('Invalid or expired token', 401));
   }
-  
-  // 4) Check if user changed password after the token was issued
-  if (currentUser.changedPasswordAfter(decoded.iat)) {
-    return next(
-      new AppError('User recently changed password! Please log in again.', 401)
-    );
-  }
-  
-  // GRANT ACCESS TO PROTECTED ROUTE
-  req.user = currentUser;
-  next();
 });
 
+// ... rest of your exports (restrictTo, forgotPassword, etc.) remain the same
 exports.restrictTo = (...roles) => {
   return (req, res, next) => {
     if (!roles.includes(req.user.role)) {
@@ -133,102 +138,118 @@ exports.restrictTo = (...roles) => {
   };
 };
 
-exports.forgotPassword = catchAsync(async (req, res, next) => {
-  // 1) Get user based on POSTed email
-  const user = await User.findOne({ email: req.body.email });
-  if (!user) {
-    return next(new AppError('There is no user with that email address.', 404));
-  }
-  
-  // 2) Generate the random reset token
-  const resetToken = user.createPasswordResetToken();
-  await user.save({ validateBeforeSave: false });
-  
-  // 3) Send it to user's email (mock implementation for now)
-  try {
-    // In a real app, you would send an email here
-    const resetURL = `${req.protocol}://${req.get(
-      'host'
-    )}/api/v1/auth/reset-password/${resetToken}`;
+  exports.forgotPassword = catchAsync(async (req, res, next) => {
+    // 1) Get user based on POSTed email
+    const user = await User.findOne({ email: req.body.email });
+    if (!user) {
+      return next(new AppError('There is no user with that email address.', 404));
+    }
     
-    res.status(200).json({
-      status: 'success',
-      message: 'Token sent to email!',
-      token: resetToken, // In production, don't send the token in the response
-    });
-  } catch (err) {
-    user.passwordResetToken = undefined;
-    user.passwordResetExpires = undefined;
+    // 2) Generate the random reset token
+    const resetToken = user.createPasswordResetToken();
     await user.save({ validateBeforeSave: false });
     
-    return next(
-      new AppError('There was an error sending the email. Try again later!'),
-      500
-    );
-  }
-});
-
-exports.resetPassword = catchAsync(async (req, res, next) => {
-  // 1) Get user based on the token
-  const hashedToken = crypto
-    .createHash('sha256')
-    .update(req.params.token)
-    .digest('hex');
-  
-  const user = await User.findOne({
-    passwordResetToken: hashedToken,
-    passwordResetExpires: { $gt: Date.now() },
+    // 3) Send it to user's email (mock implementation for now)
+    try {
+      // In a real app, you would send an email here
+      const resetURL = `${req.protocol}://${req.get(
+        'host'
+      )}/api/v1/auth/reset-password/${resetToken}`;
+      
+      res.status(200).json({
+        status: 'success',
+        message: 'Token sent to email!',
+        token: resetToken, // In production, don't send the token in the response
+      });
+    } catch (err) {
+      user.passwordResetToken = undefined;
+      user.passwordResetExpires = undefined;
+      await user.save({ validateBeforeSave: false });
+      
+      return next(
+        new AppError('There was an error sending the email. Try again later!'),
+        500
+      );
+    }
   });
-  
-  // 2) If token has not expired, and there is user, set the new password
-  if (!user) {
-    return next(new AppError('Token is invalid or has expired', 400));
-  }
-  
-  user.password = req.body.password;
-  user.passwordResetToken = undefined;
-  user.passwordResetExpires = undefined;
-  await user.save();
-  
-  // 3) Update changedPasswordAt property for the user
-  // This is handled in the User model pre-save middleware
-  
-  // 4) Log the user in, send JWT
-  createSendToken(user, 200, res);
-});
 
-exports.updatePassword = catchAsync(async (req, res, next) => {
-  // 1) Get user from collection
-  const user = await User.findById(req.user.id).select('+password');
-  
-  // 2) Check if POSTed current password is correct
-  if (!(await user.correctPassword(req.body.passwordCurrent, user.password))) {
-    return next(new AppError('Your current password is wrong.', 401));
-  }
-  
-  // 3) If so, update password
-  user.password = req.body.password;
-  await user.save();
-  
-  // 4) Log user in, send JWT
-  createSendToken(user, 200, res);
-});
+  exports.resetPassword = catchAsync(async (req, res, next) => {
+    // 1) Get user based on the token
+    const hashedToken = crypto
+      .createHash('sha256')
+      .update(req.params.token)
+      .digest('hex');
+    
+    const user = await User.findOne({
+      passwordResetToken: hashedToken,
+      passwordResetExpires: { $gt: Date.now() },
+    });
+    
+    // 2) If token has not expired, and there is user, set the new password
+    if (!user) {
+      return next(new AppError('Token is invalid or has expired', 400));
+    }
+    
+    user.password = req.body.password;
+    user.passwordResetToken = undefined;
+    user.passwordResetExpires = undefined;
+    await user.save();
+    
+    // 3) Update changedPasswordAt property for the user
+    // This is handled in the User model pre-save middleware
+    
+    // 4) Log the user in, send JWT
+    createSendToken(user, 200, res);
+  });
 
-exports.getAllUsers = catchAsync(async (req, res, next) => {
-  try {
-    const users = await User.find().select('-password');
-    if (!users) throw new Error('No users found');
+  exports.updatePassword = catchAsync(async (req, res, next) => {
+    // 1) Get user from collection
+    const user = await User.findById(req.user.id).select('+password');
+    
+    // 2) Check if POSTed current password is correct
+    if (!(await user.correctPassword(req.body.passwordCurrent, user.password))) {
+      return next(new AppError('Your current password is wrong.', 401));
+    }
+    
+    // 3) If so, update password
+    user.password = req.body.password;
+    await user.save();
+    
+    // 4) Log user in, send JWT
+    createSendToken(user, 200, res);
+  });
+
+  exports.getAllUsers = catchAsync(async (req, res, next) => {
+    try {
+      const users = await User.find().select('-password');
+      if (!users) throw new Error('No users found');
+      
+      res.status(200).json({
+        status: 'success',
+        results: users.length,
+        data: { users },
+      });
+    } catch (err) {
+      console.error('Error fetching users:', err);
+      res.status(500).json({
+        status: 'error',
+        message: 'Failed to fetch users'
+      });
+    }
+  });
+
+  exports.getUserByEmployeeId = catchAsync(async (req, res, next) => {
+    const { employeeId } = req.params;
+    
+    const user = await User.findOne({ employeeId }).select('-password');
+    if (!user) {
+      return next(new AppError('No user found with that employee ID', 404));
+    }
     
     res.status(200).json({
       status: 'success',
-      results: users.length,
-      data: { users },
+      data: {
+        user
+      }
     });
-  } catch (err) {
-    console.error('Error fetching users:', err);
-    res.status(500).json({
-      status: 'error',
-      message: 'Failed to fetch users'
-    });
-  }
-});
+  });

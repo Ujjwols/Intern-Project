@@ -35,6 +35,7 @@ router.get('/users', authController.getAllUsers);
 
 router.post('/forgot-password', authController.forgotPassword);
 router.patch('/reset-password/:token', authController.resetPassword);
+router.get('/employee/:employeeId', authController.getUserByEmployeeId);
 
 // Protect all routes after this middleware
 router.use(authController.protect);
